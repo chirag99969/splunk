@@ -44,3 +44,51 @@ sourcetype=aws_all result.sourcetype=aws:s3:accesslogs result.bucket_name=frothl
 | table result._time result.remote_ip result.requester result.operation result.http_status result.key result.error_code result.bytes_sent result.object_size result.request_uri 
 | sort + result._time
 
+## Splunk - Making sense of VPC Flow logs 
+
+### Traffic in outbound direction 
+
+sourcetype=aws_all "result.sourcetype"="aws:cloudwatchlogs:vpcflow" 
+| search NOT result.dest_ip IN (10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12) 
+| stats count values(result.src_ip) values(result.dest_port) values(result.protocol) sum(result.bytes) as bytes sum(result.packets) as packets by result.dest_ip 
+| sort -bytes
+
+
+### Traffic in inbound direction
+sourcetype=aws_all "result.sourcetype"="aws:cloudwatchlogs:vpcflow" result.action=blocked
+| search NOT result.src_ip IN (10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12) 
+| stats count values(result.dest_ip) values(result.src_port) values(result.dest_port) values(result.protocol) sum(result.bytes) as bytes sum(result.packets) as packets by result.src_ip result.action
+| sort - bytes result.action
+
+### Guarduty Findings 
+details 
+external IP: 13.125.33.130 (i.e. Brute force, Scanner) , aws_account_id:622676721278, internal IP:172.16.0.178
+
+### RARE Countries 
+sourcetype=aws_all "result.sourcetype"="aws:cloudwatchlogs:vpcflow" result.action=blocked
+| search NOT result.src_ip IN (10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12) 
+| iplocation result.src_ip
+| rare Country
+
+### Going further
+sourcetype=aws_all "result.sourcetype"="aws:cloudwatchlogs:vpcflow" 
+| search NOT result.src_ip IN (10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12) 
+| iplocation result.src_ip
+| search Country IN (Armenia, Cambodia, Cyprus, Estonia, "El Salvador", Iraq, Kenya, Jamaica) 
+| table result.src_ip result.dest_ip result.action result.src_port result.protocol Country result._time
+
+### All Connection Attempts Over Time To Amp Ports
+sourcetype=aws_all "result.sourcetype"="aws:cloudwatchlogs:vpcflow" result.dest_port IN (17, 123, 110, 111, 53, 1812, 1645, 19, 1813, 1646, 161, 162, 389, 69) 
+| timechart span=5m count(result.src_ip) by result.dest_port
+
+
+### Anomaly detection (Malicious IP scanning all the open ports)
+sourcetype=aws_all "result.sourcetype"="aws:cloudwatchlogs:vpcflow" result.action=blocked
+| search NOT result.src_ip IN (10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12) 
+| bin span=5m result._time 
+| stats count sum(result.bytes) as bytes sum(result.packets) as packets by result.src_ip result.dest_ip result.action result.dest_port result.protocol
+| eventstats avg(bytes) as avgbytes stdev(bytes) as stdevbytes 
+| eval a=3 
+| eval isOutlier=if(bytes > avgbytes + (stdevbytes*3), 1, 0) 
+| search isOutlier=1 
+| table result.src_ip result.dest_ip result.dest_port  result.protocol result.action
